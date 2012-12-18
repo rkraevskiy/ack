@@ -29,11 +29,11 @@
 
 /*
  *  TODO:
- *  - ackrc
+ *  + ackrc
  *  - utf8
  *  + OOM
  *  - exit codes
- *  - ctx->data == NULL
+ *  + ctx->data == NULL
  *  - cleanup
  *  + errors handling
  *  + types
@@ -89,6 +89,9 @@
 #include <time.h>
 #include <unistd.h>
 #include "queue.h"
+#include <string.h>
+
+#include <fcntl.h>
 
 #if !defined(WINDOWS)
 #   if defined(__MINGW32__) || defined(_WIN32) || defined (cygwin) || defined(__WIN32__) || defined(_WIN64) || defined(__TOS_WIN__) || defined(__WINDOWS__)
@@ -110,16 +113,50 @@
 int scandir( const char *dirname, struct dirent ***namelist, int (*select)(const struct dirent *), int (*compar)(const void*, const void*));
 int alphasort(const void *a, const void *b);
 
+#ifndef PATH_MAX
+#  define PATH_MAX MAX_PATH
+#endif
 
+#define FILENAMECMP strcmp
+#define FILENAMENCMP strncmp
+
+#define F_LONGLONG "I64"
 #else
 #   define DIRSEPS "/"
 #   define DIRSEPC '/'
-#endif
-
 
 #define FILENAMECMP strcasecmp
 #define FILENAMENCMP strncasecmp
+#define F_LONGLONG "ll"
+#endif
 
+
+#if !defined O_NOATIME
+# define O_NOATIME 0
+#endif
+
+
+#define USE_READ
+
+#ifdef USE_READ
+#   define FISGOOD(x) (x!=-1)
+#   define FHANDLE int
+#   define FREAD(fid,buf,size) read(fid,buf,size)
+#   define FOPEN(name) open(name,O_RDONLY)
+#   define FCLOSE(fid) close(fid)
+#   define FSTDIN_HANDLE 0
+#   define FSTDOUT_HANDLE 1
+#else 
+#   define FISGOOD(x) (x!=NULL)
+#   define FHANDLE FILE*
+#   define FREAD(fid,buf,size) fread(buf,1,size,fid)
+#   define FOPEN(name) fopen(name,"rb")
+#   define FCLOSE(fid) fclose(fid)
+#   define FSTDIN_HANDLE stdin
+#   define FSTDOUT_HANDLE stdout
+#endif
+
+#define BUFFER_SIZE 8*1024
 
 #ifdef DEBUG 
 static void* (*x_malloc)(size_t) = malloc;
@@ -156,9 +193,19 @@ typedef struct{
     long start;
 }buf_t;
 
-typedef struct{
+
+
+typedef struct {
+    int start;
+    int len;
+}match_t;
+
+typedef struct re{
     pcre *re;
     pcre_extra *pe;
+    int plen;
+    char *pattern;
+    int (*findall)(struct re *re,const char *str,long len,match_t *matches, int matches_len);
 }re_t;
 
 typedef struct ext{
@@ -173,6 +220,7 @@ typedef LIST_HEAD(ext_list,ext) ext_list_t;
 typedef struct filetype{
     LIST_ENTRY(filetype) next;
     char *name;
+    int namelen;
     int i;
     int wanted;
 }filetype_t;
@@ -282,6 +330,20 @@ struct {
     string_list_t file_list;
 }opt;
 
+
+typedef struct{
+    FHANDLE f;
+    char *fullname;
+    char *name;
+    int namelen;
+    long nmatches;
+    long line; /* current line */
+    bitfiels_t *filetypes;
+    int is_binary;
+    int type_processed;
+    buf_t buf;
+}file_t;
+
 struct {
     long files_matched;
     long total_matches;
@@ -297,6 +359,9 @@ struct {
     filetype_t *ft_ruby;
     filetype_t *ft_binary;
     int offsets[OFFSETS_SIZE];
+    int nmatches;
+    match_t matches[OFFSETS_SIZE];
+    file_t file;
 }vars;
 
 struct skip_dirs{
@@ -367,12 +432,14 @@ struct{
 }file_types [] = {
     {"ada", ".ada,.adb,.ads"},
     {"actionscript",".as,.mxml"},
-    {"asm",".asm,.s"},
+    {"asm",".asm,.S"},
+    {"awk",".awk"},
     {"batch",".bat,.cmd"},
     {"binary","Binary files (default: off)"},
     {"cc",".c,.h,.xs"},
     {"cfmx",".cfc,.cfm,.cfml"},
     {"clojure",".clj"},
+    {"config",".cfg,.conf"},
     {"cpp",".cpp,.cc,.cxx,.m,.hpp,.hh,.h,.hxx"},
     {"csharp",".cs"},
     {"css",".css"},
@@ -412,7 +479,7 @@ struct{
     {"tex",".tex,.cls,.sty"},
     {"text","Text files (default: off)"},
     {"tt",".tt,.tt2,.ttml"},
-    {"vb",".bas,.cls,.frm,.ctl,.vb,.resx"},
+    {"vb",".bas,.cls,.frm,.ctl,.vb,.resx,.vbs"},
     {"verilog",".v,.vh,.sv"},
     {"vhdl",".vhd,.vhdl"},
     {"vim",".vim"},
@@ -420,31 +487,21 @@ struct{
     {"xml",".xml,.dtd,.xsl,.xslt,.ent"},
 };
 
-
-typedef struct{
-    FILE *f;
-    char *fullname;
-    char *name;
-    long nmatches;
-    long line; /* current line */
-    bitfiels_t *filetypes;
-    int is_binary;
-    int type_processed;
-    buf_t buf;
-}file_t;
-
-
+int re_findall(re_t *re,const char *str,long len,match_t *matches, int matches_len);
+int str_findall(re_t *re,const char *str,long len,match_t *matches, int matches_len);
+int is_regexp(char * str, int len);
 void get_filetypes(file_t *file);
 int _ends_with(const char *name,int nsize,const char *ext,int esize);
 int is_searchable(file_t *);
-
+char *_strnstr1(const char *s, const char *f, int sl);
+char *_strnstr2(const char *s, int sl, const char *f, int fl);
 
 char* shells[] = {"bash","tcsh","ksh","zsh","ash","sh",NULL};
-char* interprets[] = {"ruby","perl","php","python","lua",NULL};
+char* interprets[] = {"ruby","perl","php","python","lua","awk",NULL};
 
 
 
-static int isdir(char *filename){
+int isdir(char *filename){
     struct stat statbuf;
 
     if (lstat(filename, &statbuf) < 0)
@@ -497,7 +554,7 @@ char* dstrdup(char* str){
 
 
 
-string_t * string_new(char *str){
+static string_t * string_new(char *str){
     string_t *ptr;
 
     ptr = malloc(sizeof(string_t));
@@ -515,7 +572,7 @@ string_t * string_new(char *str){
 
 
 
-string_t *string_find(string_list_t *head,char *str,str_cmp_func_t func){
+static string_t *string_find(string_list_t *head,char *str,str_cmp_func_t func){
     string_t *ptr;
     int len;
 
@@ -528,7 +585,7 @@ string_t *string_find(string_list_t *head,char *str,str_cmp_func_t func){
     return NULL;
 }
 
-int string_del(string_list_t *head,char *str, str_cmp_func_t func){
+static int string_del(string_list_t *head,char *str, str_cmp_func_t func){
     string_t *ptr;
 
     ptr = string_find(head,str,func);
@@ -538,7 +595,7 @@ int string_del(string_list_t *head,char *str, str_cmp_func_t func){
     return 0;
 }
 
-int string_add(string_list_t *head,char *str, str_cmp_func_t func){
+static int string_add(string_list_t *head,char *str, str_cmp_func_t func){
     string_t *ptr;
 
     ptr = string_find(head,str,func);
@@ -555,7 +612,7 @@ int string_add(string_list_t *head,char *str, str_cmp_func_t func){
 }
 
 
-void strings_free(string_list_t *head){
+static void strings_free(string_list_t *head){
     string_t *str;
 
     while(!LIST_EMPTY(head)){
@@ -664,7 +721,7 @@ void bf_free(bitfiels_t *b) {
 /* bit field */
 /* ========================================================================= */ 
 
-int read_file(buf_t *line,FILE *f, long size) {
+int read_file(buf_t *line,FHANDLE f, long size) {
     int res;
     int _free;
     char *tmp;
@@ -681,11 +738,13 @@ int read_file(buf_t *line,FILE *f, long size) {
     }
 
     if (size > (line->allocated - (line->start+line->used))){
-        memmove(line->buf,&line->buf[line->start],line->used);
+        if (line->used){
+            memmove(line->buf,&line->buf[line->start],line->used);
+        }
         line->start = 0;
     }
 
-    res = fread(&line->buf[line->start+line->used],1,size,f);
+    res = FREAD(f,&line->buf[line->start+line->used],size);
     if (res>0){
         line->used+=res;
     }
@@ -694,7 +753,7 @@ int read_file(buf_t *line,FILE *f, long size) {
 
 
 
- 
+/* 
 const char* _strnchr(const char *str, int len, int ch) {
     int i;
     const char *ptr;
@@ -707,20 +766,16 @@ const char* _strnchr(const char *str, int len, int ch) {
         ptr++;
     }
     return NULL;
-}
+}*/
 
+#define _strnchr(str,len,c) memchr(str,c,len)
 
 int get_line(buf_t *line, file_t *file) {
-    int _free;
     int start;
     int len;
     const char *ptr;
     char *tmp;
     int res;
-
-
-
-    start = file->buf.start; 
 
     ptr = NULL;
     
@@ -729,7 +784,7 @@ int get_line(buf_t *line, file_t *file) {
         ptr = _strnchr(&file->buf.buf[file->buf.start+start],file->buf.used-start,'\n');
         if (!ptr){
             start = file->buf.used;
-            res = read_file(&file->buf,file->f,8*1024);
+            res = read_file(&file->buf,file->f,BUFFER_SIZE);
             if (res<=0){
                 break;
             }
@@ -743,17 +798,19 @@ int get_line(buf_t *line, file_t *file) {
     }
 
     if (line->allocated < len){
-        tmp = realloc(line->buf,len);
+        tmp = realloc(line->buf,len*2);
         if (!tmp){
             fprintf(stderr,"%s: "__FILE__":"STR(__LINE__)" OOM\n",opt.self_name);
             return 0;
         }
-        line->allocated = len;
+        line->allocated = len*2;
         line->used = 0;
         line->start = 0;
         line->buf = tmp;
     }
-    memcpy(line->buf,&file->buf.buf[file->buf.start],len);
+    if (len){
+        memcpy(line->buf,&file->buf.buf[file->buf.start],len);
+    }
     file->buf.used -= len;
     file->buf.start += len;
     line->used = len;
@@ -769,28 +826,81 @@ int compile(re_t *re,char *pattern,int options) {
         fprintf(stderr,"%s: Failed to compile regex '%s':%s\n",opt.self_name,pattern,error);
         return 0;
     }
-    re->pe = pcre_study(re->re,0,&error);
+
+    re->plen = strlen(pattern);
+    re->pattern = pattern;
+    if (is_regexp(pattern,re->plen)){
+       re->findall = re_findall;
+       re->pe = pcre_study(re->re,0,&error);
+    }else{
+       re->findall = str_findall;
+    }
     return 1;
 }
 
 
 
-int match(re_t *re,const char *str, long len,int* offsets, int osize, int *res) {
-    int r;
 
-    r = pcre_exec(re->re,re->pe, (char *)str,len,0,0|PCRE_NOTEMPTY,offsets,osize);
 
-    if (res){
-        *res = r;
+
+inline int simple_match(re_t *re,const char *str, long len,match_t *matches, int matches_len) {
+    return re->findall(re,str,len,matches,matches_len);
+}
+
+
+int re_findall(re_t *re,const char *str,long len,match_t *matches, int matches_len){
+    int nmatches = 0;
+    match_t *mptr;
+    
+    mptr = matches;
+    while(len && nmatches<matches_len && (0<pcre_exec(re->re,re->pe, (char *)str,len,0,0|PCRE_NOTEMPTY,vars.offsets,OFFSETS_SIZE))){
+        nmatches++;
+        if (mptr){
+            mptr->start = vars.offsets[0];
+            mptr->len = vars.offsets[1]-vars.offsets[0];
+            mptr++;
+            str+= vars.offsets[1];
+            len -= vars.offsets[1];
+        }
     }
-    return r>0;
+    return nmatches;
 }
 
-
-int simple_match(re_t *re,char *str, long len,int *res) {
-    return match(re,str,len,vars.offsets,OFFSETS_SIZE,res);
+int str_findall(re_t *re,const char *str,long len,match_t *matches, int matches_len){
+    const char *r;
+    int nmatches = 0;
+    
+    while(len && nmatches<matches_len && (r = _strnstr2(str,len,re->pattern,re->plen))){
+        nmatches++;
+        matches->start = r-str;
+        matches->len = re->plen;
+        matches++;
+        r=r+re->plen;
+        len -= r-str;
+        str = r;
+    }
+    return nmatches;
 }
 
+/*
+inline int simple_matches(re_t *re,char *str, long len) {
+    vars.nmatches = 0;
+    int *ptr;
+    
+    ptr = vars.matches;
+    while(len && simple_match(re,str,len,NULL) && vars.nmatches<OFFSETS_SIZE){
+        vars.nmatches++;
+        *ptr = vars.offsets[0];
+        ptr++;
+        *ptr = vars.offsets[1]-vars.offsets[0];
+        ptr++;
+        str+= vars.offsets[1];
+        len -= vars.offsets[1];
+    }
+    return vars.nmatches;
+}
+
+*/
 
 char *_basename(char* fullname) {
     char *f2;
@@ -824,8 +934,75 @@ void print_count(char *filename,long nmatches,char *le,int count,int show_filena
     }
 }
 
+char *_strnstr2(const char *s,int sl, const char *f,int fl){
+    register const char *ptr;
+    register const char *eptr;
 
-char *analyse_header(char *str) {
+    if(sl<fl){
+        return NULL;
+    }
+
+    if (f && fl){
+        ptr = _strnchr(s,sl,*f);
+        if (ptr){
+            if (!memcmp(ptr,f,fl)){
+                return (char*)ptr;
+            }
+            eptr = s+sl-fl+1;
+            ptr++;
+            while(ptr<eptr){
+                ptr = _strnchr(ptr,eptr-ptr,*f);
+                if (ptr){
+                    if (!memcmp(ptr,f,fl)){
+                        return (char*)ptr;
+                    }
+                    ptr++;
+                }else{
+                    break;
+                }
+            }
+        }
+    }else{
+        return (char*)s;
+    }
+    return NULL;
+}
+
+char *_strnstr1(const char *s, const char *f, int sl){
+    int fl;
+    register const char *ptr;
+    register const char *eptr;
+
+
+    
+    if (f && *f){
+        ptr = _strnchr(s,sl,*f);
+        if (ptr){
+            fl = strlen(f);
+            if (!memcmp(ptr,f,fl)){
+                return (char*)ptr;
+            }
+            eptr = s+sl-fl+1;
+            ptr++;
+            while(ptr<eptr){
+                ptr = _strnchr(ptr,eptr-ptr,*f);
+                if (ptr){
+                    if (!memcmp(ptr,f,fl)){
+                        return (char*)ptr;
+                    }
+                    ptr++;
+                }else{
+                    break;
+                }
+            }
+        }
+    }else{
+        return (char*)s;
+    }
+    return NULL;
+}
+
+char *analyse_header(char *str,int len) {
     char **ptr;
     char *name;
 
@@ -833,14 +1010,13 @@ char *analyse_header(char *str) {
     name = str;
     if (name){
         for(ptr = interprets;*ptr;ptr++){
-            if(strstr(name,*ptr)){
+            if(_strnstr1(name,*ptr,len)){
                 return *ptr;
-
             }
         }
 
         for(ptr = shells;*ptr;ptr++){
-            if(strstr(name,*ptr)){
+            if(_strnstr1(name,*ptr,len)){
                 return "shell";
             }
         }
@@ -849,60 +1025,59 @@ char *analyse_header(char *str) {
     return NULL;
 }
 
-char* analyse_internals(file_t *file) {
-    char buf[1024];
-    int size;
-    int tmp;
-    char *ptr;
-    int cr = 0;
-    char *res = "binary";
 
-    size = read_file(&file->buf,file->f,sizeof(buf));
-    tmp = size;
+char* analyse_internals(file_t *file) {
+    int size;
+    char *ptr;
+    char *res = "text";
+
+    size = read_file(&file->buf,file->f,1024);
     if (size>0){
-        memcpy(buf,file->buf.buf,size);
-        ptr = buf;
-        while(tmp){
-            if (*ptr == 0){
-                break;
-            }
-            if (!cr && (*ptr == 0x0a)){
-                cr = tmp;
-            }
-            tmp--;
-            ptr++;
-        }
-        vars.size_processed += size-tmp;
-        if (!tmp){
-            res = "text";
-            if (cr && (cr>4) && buf[0] == '#' && buf[1] =='!'){
-                tmp = size-cr;
-                buf[tmp] = 0;
-                ptr = analyse_header(buf);
+        vars.size_processed+=size;
+
+        if ( (size>6) && (0==strncasecmp(file->buf.buf,"<?xml ",6))){
+            res = "xml";
+        }else if ( (file->buf.buf[0] == '#') && (file->buf.buf[1] == '!')){
+            /* find 0x0a */
+            ptr = _strnchr(file->buf.buf,size,0x0a);
+            if (ptr){
+                ptr = analyse_header(file->buf.buf,ptr-file->buf.buf);
                 if (ptr){
                     res = ptr;
                 }
-                /*
+                /* 
                  * types: 
                  * - shell,TEXT == (?:ba|t?c|k|z)?sh) == bash|t*sh|ksh|zsh|sh
                  * - $2,TEXT    == (ruby|perl|php|python)
                  * */
+
             }
         }else{
-            file->is_binary = 1;
+            ptr = _strnchr(file->buf.buf,size,0x00);
+            if (!ptr){
+                res = "text";
+            }else{
+                res = "binary";
+                //printf("%s: binary on %04x\n",file->fullname,ptr-file->buf.buf); // XXX
+                file->is_binary = 1;
+            }
         }
+    }else{
     }
     return res;
 }
 
 
-void out_line(buf_t *line) {
+inline void out_line(buf_t *line) {
     fwrite(line->buf,1,line->used,stdout);
 }
 
-void out_context(char *name,buf_t *str,long line,long column,int is_match, int cstart,int clen) {
+void out_context(char *name,buf_t *str,long line,long column,int is_match, match_t* matches,int nmatches) {
     char ch = is_match? ':':'-';
     char *ptr;
+    char *end;
+    int i;
+    match_t *mptr;
 
     if (opt.show_filename){
         if (!opt.heading){
@@ -918,9 +1093,16 @@ void out_context(char *name,buf_t *str,long line,long column,int is_match, int c
         printf("%ld%c",column,ch);
     }
     if (opt.o){
-        if (is_match){
-            fwrite(str->buf+cstart,1,clen,stdout);
-            printf("\n");
+        if (is_match && matches){
+            mptr = matches;
+            ptr=str->buf;
+            for(i=0;i<nmatches;i++){
+                ptr+=mptr->start;
+                fwrite(ptr,1,mptr->len,stdout);
+                ptr+=mptr->len;
+                printf("\n");
+                mptr++;
+            }
         }
     }else{
         if (str->used){
@@ -932,14 +1114,25 @@ void out_context(char *name,buf_t *str,long line,long column,int is_match, int c
             }
             assert((str->buf-1)<=ptr);
         }
-        if (clen == 0 || !opt.color){
+        if (nmatches == 0 || !opt.color){
             out_line(str);
         }else{
-            fwrite(str->buf,1,cstart,stdout);
-            fprintf(stdout,"%s",opt.color_match);
-            fwrite(str->buf+cstart,1,clen,stdout);
-            fprintf(stdout,"\e[0m\e[K");
-            fwrite(str->buf+cstart+clen,1,str->used-(cstart+clen),stdout);
+            mptr = matches;
+            ptr = str->buf;
+            end = ptr+str->used;
+            for(i=0;i<nmatches;i++){
+                fwrite(ptr,1,mptr->start,stdout);
+                fprintf(stdout,"%s",opt.color_match);
+                ptr+=mptr->start;
+                fwrite(ptr,1,mptr->len,stdout);
+                fprintf(stdout,"\e[0m\e[K");
+                //fwrite(str->buf+cstart+clen,1,str->used-(cstart+clen),stdout);
+                ptr+=mptr->len;
+                mptr++;
+            }
+            if (ptr<end){
+                fwrite(ptr,1,end-ptr,stdout);
+            }
         }
         printf("\n");
 
@@ -963,7 +1156,7 @@ long analize_file(file_t *file) {
             p->used = 0;
             continue;
         }
-        if (opt.v != simple_match(&opt.match,p->buf,p->used,&res)){
+        if ((opt.v != 0 ) != (0 != (vars.nmatches=simple_match(&opt.match,p->buf,p->used,vars.matches,OFFSETS_SIZE)))){
             if (opt.show_context){
                 if(file->is_binary){
                     if (vars.files_matched && !file->nmatches){
@@ -1002,7 +1195,7 @@ long analize_file(file_t *file) {
                         hptr++;
                         vars.hused--;
                     }
-                    out_context(file->fullname,p,file->line,vars.offsets[0]+1,1,vars.offsets[0],vars.offsets[1]-vars.offsets[0]);
+                    out_context(file->fullname,p,file->line,vars.matches->start+1,1,vars.matches,vars.nmatches);
                     p = &vars.history[vars.hused];
                 }
             }
@@ -1052,7 +1245,6 @@ void get_filetypes(file_t *file) {
         return;
 
     file->type_processed = 1;
-    len = strlen(file->name);
     res = 0;
 
     if (!is_searchable(file)){
@@ -1089,12 +1281,15 @@ void get_filetypes(file_t *file) {
         res++;
     }
 
+    len = file->namelen;
+
     LIST_FOREACH(ext,&opt.exts,next){
         if (_ends_with(file->name,len,ext->ext,ext->len)){
             bf_set(file->filetypes,ext->type->i);
             res++;
         }
     }
+
     if (res && !file->is_binary ){
         bf_set(file->filetypes,vars.ft_text->i);
     }
@@ -1123,23 +1318,6 @@ int scandir_ignore_dir(const struct dirent *d) {
 
 
 
-int ignore_dir2(struct dirent *d) {
-    int i;
-    struct skip_dirs *ptr;
-    
-    ptr = skip_dirs;
-
-    for(i=1;i<sizeof(skip_dirs)/sizeof(skip_dirs[0]);i++)
-    {
-        if (FILENAMECMP(d->d_name,ptr->dir)==0) {
-            return 0;
-        }
-        ptr++;
-    }
-    return 1;
-}
-
-
 int is_interesting(file_t *file) {
     get_filetypes(file);
     return (bf_fast_intersect(file->filetypes,opt.req_filetypes));
@@ -1147,7 +1325,7 @@ int is_interesting(file_t *file) {
 
 
 int _starts_with(const char *name,int nsize, const char *start,int ssize) {
-    if (nsize < ssize)
+    if ((nsize < ssize) || (*name!=*start))
         return 0;
     return 0 == FILENAMENCMP(name,start,ssize);
 }
@@ -1155,15 +1333,13 @@ int _starts_with(const char *name,int nsize, const char *start,int ssize) {
 int _ends_with(const char *name,int nsize,const char *ext,int esize) {
     if (nsize < esize)
         return 0;
-    return 0 == FILENAMENCMP(name+nsize-esize,ext,esize);
-}
-
-int ext_cmp(const char *name,const char *ext){
-    return 0;
+    {
+        return 0 == FILENAMENCMP(name+nsize-esize,ext,esize);
+    }
 }
 
 int is_searchable(file_t *file) {
-    int len = strlen(file->name);
+    int len = file->namelen;
     return !(
             /* \.bak */_ends_with(file->name,len,".bak",4) ||
             /* ~$ */_ends_with(file->name,len,"~",1) ||
@@ -1175,7 +1351,7 @@ int is_searchable(file_t *file) {
 }
 
 
-long process_sdtdin(FILE *f) {
+long process_sdtdin(FHANDLE f) {
     file_t file;
 
     memset(&file,0,sizeof(file_t));
@@ -1193,32 +1369,40 @@ long process_sdtdin(FILE *f) {
 
 
 long process_file(char *fullname,char *name) {
-    file_t file;
     
-    memset(&file,0,sizeof(file_t));
-    file.fullname = fullname;
-    file.name = name;
-    file.filetypes = vars.filetypes;
-    bf_reset(file.filetypes);
-    file.f = fopen(file.fullname,"rb");
+    vars.file.buf.start = 0;
+    vars.file.buf.used = 0;
+    vars.file.fullname = fullname;
+    vars.file.name = name;
+    vars.file.namelen = strlen(name);
+    vars.file.filetypes = vars.filetypes;
+    vars.file.nmatches = 0;
+    vars.file.line = 0;
+    vars.file.is_binary = 0;
+    vars.file.type_processed = 0;
+
+    bf_reset(vars.file.filetypes);
+    vars.file.f = FOPEN(vars.file.fullname);
     vars.file_processed++;
-    if (file.f){
-        if (opt.u ||
-                (opt.a && is_searchable(&file))||
-                ((!opt.a) && is_interesting(&file))
+    if (FISGOOD(vars.file.f)){
+
+        if ( /*opt.u ||*/
+                (opt.a && is_searchable(&vars.file))||
+                ((!opt.a) && is_interesting(&vars.file))
            ){
+
             if (opt.f){
-                file.nmatches++;
-                printf("%s",file.fullname);
+                vars.file.nmatches++;
+                printf("%s",vars.file.fullname);
                 if (opt.show_types){
                     filetype_t *ft;
                     int i;
 
                     printf(" => ");
                     i = 0;
-                    get_filetypes(&file);
+                    get_filetypes(&vars.file);
                     LIST_FOREACH(ft,&opt.all_filetypes,next){
-                        if (bf_isset(file.filetypes,ft->i)){
+                        if (bf_isset(vars.file.filetypes,ft->i)){
                             if (i){
                                 printf(",");
                             }
@@ -1230,25 +1414,24 @@ long process_file(char *fullname,char *name) {
                 }
                 printf("%s",opt.line_end);
             }else{
-                get_filetypes(&file);
-                analize_file(&file);
+                get_filetypes(&vars.file);
+                analize_file(&vars.file);
                 if (!opt.show_total && (opt.l || opt.c)){ 
-                    if (file.nmatches){
-                        print_count(file.fullname,file.nmatches,opt.line_end,opt.c,opt.show_filename);
+                    if (vars.file.nmatches){
+                        print_count(vars.file.fullname,vars.file.nmatches,opt.line_end,opt.c,opt.show_filename);
                     }else if (opt.print_count0){
-                        print_count(file.fullname,file.nmatches,opt.line_end,1,opt.show_filename);
+                        print_count(vars.file.fullname,vars.file.nmatches,opt.line_end,1,opt.show_filename);
                     }
                 }
            }
         }
-        fclose(file.f);
+        FCLOSE(vars.file.f);
     }else{
-        fprintf(stderr,"%s: %s: Failed to open\n",opt.self_name,file.fullname);
+        fprintf(stderr,"%s: %s: Failed to open %d:%s\n",opt.self_name,vars.file.fullname,errno,strerror(errno));
     }
-    free(file.buf.buf);
-    vars.files_matched +=file.nmatches;
-    vars.total_matches += file.nmatches;
-    return file.nmatches;
+    vars.files_matched += vars.file.nmatches;
+    vars.total_matches += vars.file.nmatches;
+    return vars.file.nmatches;
 
 }
 
@@ -1261,14 +1444,20 @@ void process(char *filename) {
     int i;
     struct stat statbuf;
 
-
     if (lstat(filename, &statbuf) < 0){
         fprintf(stderr,"%s: Can't stat '%s'\n",opt.self_name,filename);   
         return;
     }
     if (S_ISDIR(statbuf.st_mode)){
-        count = scandir(filename,&dents, opt.u ? NULL : scandir_ignore_dir,opt.sort_files?alphasort:NULL);
+        count = scandir(filename,&dents, (opt.u) ? NULL : scandir_ignore_dir,opt.sort_files?alphasort:NULL);
         if (count>=0){
+            i = strlen(filename);
+            if (i){
+                i--;
+            }
+            if(filename[i] == DIRSEPC){
+                filename[i] = 0;
+            }
             for(i=0;(i<count) && !(opt.one && vars.total_matches) ;i++){
                 dent = dents[i];
 
@@ -1279,20 +1468,22 @@ void process(char *filename) {
                         strcpy(fullname,dent->d_name);
                     }
                     fullname[sizeof(fullname)-1] = 0;
-                    if (stat(fullname, &statbuf) < 0)
+                    if (lstat(fullname, &statbuf) < 0){
+                        fprintf(stderr,"%s: Can't stat '%s'\n",opt.self_name,filename);   
                         return;  
+                    }
 #ifndef WINDOWS
                     if (S_ISLNK(statbuf.st_mode) && !opt.follow){
                         continue;
                     }
 #endif
                     if (S_ISDIR(statbuf.st_mode)){
-                        if(!ignore_dir(fullname) && opt.recursive){
+                        if(/*(opt.u || !ignore_dir(fullname)) &&*/ opt.recursive){
                             process(fullname);
                         }
                     }else{
                         if(opt.G.re){
-                            if (opt.invert_file_match == simple_match(&opt.G,dent->d_name,strlen(dent->d_name),NULL)){
+                            if (opt.invert_file_match == simple_match(&opt.G,dent->d_name,strlen(dent->d_name),NULL,1)){
                                 continue;
                             }
                         }
@@ -1316,9 +1507,10 @@ void process(char *filename) {
 
 filetype_t *find_filetype(char *filetype) {
     filetype_t *ft;
+    int len = strlen(filetype);
 
     LIST_FOREACH(ft,&opt.all_filetypes,next){
-        if (0==strcmp(ft->name,filetype)){
+        if ( (ft->namelen == len) && (0==strcmp(ft->name,filetype)) ){
             break;
         }
     }
@@ -1344,6 +1536,7 @@ int add_exts(char* filetype, char *exts,int del_old) {
             exit(NOMATCH);
         }
         ft->name = strdup(filetype);
+        ft->namelen = strlen(filetype);
         ft->i = opt.nfiletypes;
         ft->wanted = 0;
         opt.nfiletypes++;
@@ -1563,7 +1756,7 @@ int parse_long (char* str, long *res) {
     errno = 0;
     v = strtoul(str,&endp,0);
     if (errno == ERANGE || errno == EINVAL){
-        return -1;
+        return 0;
     }
     len = endp - str;
     if (len)
@@ -1575,9 +1768,9 @@ int parse_long (char* str, long *res) {
 int parse_long_long (char* str, long long *res) {
     int r;
 
-    r = sscanf(str,"0x%I64x",res);
+    r = sscanf(str,"0x%"F_LONGLONG"x",res);
     if ( (r == 0)  || (r == EOF) ){
-        r = sscanf(str,"%I64",res);
+        r = sscanf(str,"%"F_LONGLONG"d",res);
     }
     if (r!= EOF){
         return true;
@@ -2427,7 +2620,6 @@ int process_config(char *fname){
 
             if (*s && *s != '#'){
                 char *argv[2] = {opt.self_name,s};
-                int i =  opt_parse(2,argv,type_opt_find,args,NULL);
                 if ( 1 >= opt_parse(2,argv,type_opt_find,args,NULL)){
                     res = false;
                     fprintf(stderr,"Bad option in file %s line %d\n",fname,nline);
@@ -2461,8 +2653,7 @@ int _configure1(char *dname){
 
 int configure(){
     bool res;
-    char **lines;
-    
+
     res = _configure1(getenv("HOME"));
     res = res && _configure1(getenv("USERPROFILE"));
     res = res && _configure1("~");
@@ -2509,6 +2700,12 @@ void init_req_filetypes(){
     }
 }
 
+int is_regexp(char * str, int len){
+    static char regexp_chars[] = ".+?*\\)]^}|";
+    
+    return (NULL != strpbrk(str,regexp_chars));
+}
+
 int main(int argc, char *argv[]){
     char *locale=NULL;
     char *locale_from=NULL;
@@ -2519,7 +2716,6 @@ int main(int argc, char *argv[]){
     time_t start_time;
     long times;
     int nargc;
-    long i;
 
 
 #ifdef WINDOWS
@@ -2584,7 +2780,6 @@ int main(int argc, char *argv[]){
     /* set from argv options */
 
     nargc = opt_parse(argc,argv,type_opt_find,args,NULL);
-
 
     if (argc<=1){
         print_usage();
@@ -2771,28 +2966,28 @@ int main(int argc, char *argv[]){
                     if (!opt.match_pattern){
                         fprintf(stderr,"%s: "__FILE__":"STR(__LINE__)" OOM",opt.self_name);
                         errors++;
-                    }
-                    opt.match_pattern[0] = 0;
-                    if (opt.w){
-                        strcat(opt.match_pattern,"\\b");
-                    }
-                    if (opt.Q){
-                        strcat(opt.match_pattern,"\\Q");
-                    }
-                    strcat(opt.match_pattern,tmp);
-                    if (opt.Q){
-                        strcat(opt.match_pattern,"\\E");
+                    }else{
+                        opt.match_pattern[0] = 0;
+                        if (opt.w){
+                            strcat(opt.match_pattern,"\\b");
+                        }
+                        if (opt.Q){
+                            strcat(opt.match_pattern,"\\Q");
+                        }
+                        strcat(opt.match_pattern,tmp);
+                        if (opt.Q){
+                            strcat(opt.match_pattern,"\\E");
+                        }
                     }
 
                 }
-                if (!compile(&opt.match,opt.match_pattern,options)){//|PCRE_FIRSTLINE|PCRE_MULTILINE))
-                    fprintf(stderr,"%s: Failed to compile --match regex (%s)\n",opt.self_name,opt.match_pattern);
-                    errors++;
+                if (opt.match_pattern){
+                    if(!compile(&opt.match,opt.match_pattern,options)){//|PCRE_FIRSTLINE|PCRE_MULTILINE))
+                        fprintf(stderr,"%s: Failed to compile --match regex ('%s')\n",opt.self_name,opt.match_pattern);
+                        errors++;
+                    }
                 }
-                if (opt.Q || opt.w){
-                    free(opt.match_pattern);
-                }
-            }else{
+            }else if (!opt.f){
                 fprintf(stderr,"%s: No regular expression found\n",opt.self_name);
                 errors++;
             }
@@ -2807,25 +3002,13 @@ int main(int argc, char *argv[]){
 
             if (!errors){
                 if (from_pipe){
-                    process_sdtdin(stdin);
+                    process_sdtdin(FSTDIN_HANDLE);
                 }else{
                     if (nargc<argc){
                         char *ptr;
-                        char *eptr;
-                        int m;
-                        struct stat statbuf;
 
                         while(nargc<argc){
                             ptr = argv[nargc];
-                            m = strlen(ptr);
-                            if (m){
-                                m--;
-                            }
-                            eptr = ptr+m;
-                            if(0 && ptr>eptr && stat(ptr, &statbuf) < 0){
-                                eptr--;
-                                *eptr = 0;
-                            }
                             process(ptr);
                             nargc++;
                         }
@@ -2846,8 +3029,13 @@ int main(int argc, char *argv[]){
                 }
                 free(vars.history);
             }
+            if (opt.Q || opt.w){
+                free(opt.match_pattern);
+            }
             bf_free(vars.filetypes);
             bf_free(opt.req_filetypes);
+            free(vars.file.buf.buf);
+
             times = time(NULL) - start_time;
 
         }

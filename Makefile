@@ -5,7 +5,7 @@
 
 
 
-VERSION = "1.0.alpha2"
+VERSION = "1.0.beta2"
 PREFIX = "/usr"
 
 
@@ -14,8 +14,10 @@ TARBALLNAME=${TARGET}-${VERSION}
 
 SRC = main.c
 OBJ = ${SRC:.c=.o}
-LIBS= -lpcre -lpcreposix
-CFLAGS= -std=c99 -D_POSIX_SOURCE -D_BSD_SOURCE -DVERSION=\"${VERSION}\"
+LIBS= -lpcre -lpcreposix #-lpthread # for profiling
+#CFLAGS= -pg -std=c99 -D_POSIX_SOURCE -D_GNU_SOURCE -D_BSD_SOURCE -DVERSION=\"${VERSION}\"
+CFLAGS= -Wall -std=c99 -D_POSIX_SOURCE -D_GNU_SOURCE -D_BSD_SOURCE -DVERSION=\"${VERSION}\" -O3
+#LDFLAGS= -pg -static
 LDFLAGS= 
 CC=cc
 
