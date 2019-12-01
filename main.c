@@ -1,17 +1,17 @@
 /*
  *
- * Copyright (c) 2011-2012, Roman Kraevskiy <rkraevskiy@gmail.com>
+ * Copyright (c) 2011-2019, Roman Kraevskiy <rkraevskiy@gmail.com>
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met: 
- * 
+ * modification, are permitted provided that the following conditions are met:
+ *
  * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer. 
+ *    list of conditions and the following disclaimer.
  * 2. Redistributions in binary form must reproduce the above copyright notice,
  *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution. 
- * 
+ *    and/or other materials provided with the distribution.
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
  * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -22,7 +22,7 @@
  * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *  
+ *
  */
 
 
@@ -39,7 +39,7 @@
  *  + types
  *  + input from pipe
  *  + input from file/directory
- *  + help types 
+ *  + help types
  * --line=NUM            Only print line(s) NUM of each file
  * +-w, --word-regexp    Force PATTERN to match only whole words
  * +-Q, --literal        Quote all metacharacters; PATTERN is literal
@@ -117,14 +117,17 @@ int alphasort(const void *a, const void *b);
 #  define PATH_MAX MAX_PATH
 #endif
 
-#define FILENAMECMP strcmp
-#define FILENAMENCMP strncmp
+
+#define STRNCASECMP _strnicmp
+#define FILENAMECMP _stricmp 
+#define FILENAMENCMP _strnicmp
 
 #define F_LONGLONG "I64"
 #else
 #   define DIRSEPS "/"
 #   define DIRSEPC '/'
 
+#define STRNCASECMP strncasecmp
 #define FILENAMECMP strcasecmp
 #define FILENAMENCMP strncasecmp
 #define F_LONGLONG "ll"
@@ -146,7 +149,7 @@ int alphasort(const void *a, const void *b);
 #   define FCLOSE(fid) close(fid)
 #   define FSTDIN_HANDLE 0
 #   define FSTDOUT_HANDLE 1
-#else 
+#else
 #   define FISGOOD(x) (x!=NULL)
 #   define FHANDLE FILE*
 #   define FREAD(fid,buf,size) fread(buf,1,size,fid)
@@ -156,9 +159,9 @@ int alphasort(const void *a, const void *b);
 #   define FSTDOUT_HANDLE stdout
 #endif
 
-#define BUFFER_SIZE 8*1024
+#define BUFFER_SIZE 64*1024
 
-#ifdef DEBUG 
+#ifdef DEBUG
 static void* (*x_malloc)(size_t) = malloc;
 static void* (*x_calloc)(size_t,size_t) = calloc;
 static void (*x_free)(void*) = free;
@@ -177,7 +180,7 @@ long malloced=0;
 #define true !false
 #define bool int
 #define OFFSETS_SIZE 120
-
+#define numberof(x) (sizeof(x)/sizeof((x)[0]))
 #define MATCH   0
 #define NOMATCH 1
 
@@ -188,9 +191,9 @@ typedef struct{
 
 typedef struct{
     char *buf;
-    long allocated;
-    long used;
-    long start;
+    size_t allocated;
+    size_t used;
+    size_t start;
 }buf_t;
 
 
@@ -235,9 +238,9 @@ typedef struct string{
 }string_t;
 
 
-typedef int (*str_cmp_func_t)(const char *,const char *);
+typedef int (*str_cmp_func_t)(const char *,const char *,size_t len);
 
-typedef LIST_HEAD(string_list,string) string_list_t; 
+typedef LIST_HEAD(string_list,string) string_list_t;
 
 
 filetype_t *find_filetype(char *filetype);
@@ -254,7 +257,7 @@ struct {
                        only if PATTERN contains no upper case
                        Ignored if -i is specified */
     long line; /* --line=NUM            Only print line(s) NUM of each file */
-    int l; /* -l, --files-with-matches Only print filenames containing matches */ 
+    int l; /* -l, --files-with-matches Only print filenames containing matches */
     int L; /* -L, --files-without-matches Only print filenames with no matches */
     int o; /* -o Show only the part of a line matching PATTERN (turns off text highlighting) */
     int passthru; /* --passthru  Print all lines, whether matching or not */
@@ -286,7 +289,7 @@ struct {
                    (default: on when used interactively) */
     int flush; /* --flush               Flush output immediately, even when ack is used
                   non-interactively (when output goes to a pipe or
-                  file). */                  
+                  file). */
     int f; /* -f Only print the files found, without searching. The PATTERN must not be specified. */
     re_t g; /* -g REGEX              Same as -f, but only print files matching REGEX. */
     char *g_pattern;
@@ -364,10 +367,14 @@ struct {
     file_t file;
 }vars;
 
-struct skip_dirs{
-    char *dir;
-    char *who;
-} skip_dirs [] = {
+
+typedef struct{
+    char *first;
+    char *second;
+}string_pairs_t;
+
+
+string_pairs_t skip_dirs [] = {
     {".bzr","Bazaar"},
     {".cdv","Codeville"},
     {"~.dep","Interface Builder"},
@@ -390,11 +397,6 @@ struct skip_dirs{
     {"_build","Module::Build"}
 };
 
-
-typedef struct{
-    char *first;
-    char* second;
-}string_pairs_t;
 
 
 string_pairs_t colors[] = {
@@ -432,71 +434,154 @@ struct{
 }file_types [] = {
     {"ada", ".ada,.adb,.ads"},
     {"actionscript",".as,.mxml"},
+    {"apl",".apl"},
+    {"asciidoc",".adoc,.ad,.asc,.asciidoc"},
     {"asm",".asm,.S"},
     {"awk",".awk"},
     {"batch",".bat,.cmd"},
+    {"bitbake",".bb,.bbappend,.bbclass,.inc"},
     {"binary","Binary files (default: off)"},
+    {"bro",".bro,.bif"},
     {"cc",".c,.h,.xs"},
     {"cfmx",".cfc,.cfm,.cfml"},
-    {"clojure",".clj"},
+    {"chpl",".chpl"},
+    {"clojure",".clj,.cljs,.cljc,.cljx"},
+    {"coffee",".coffee,.cjsx"},
     {"config",".cfg,.conf"},
-    {"cpp",".cpp,.cc,.cxx,.m,.hpp,.hh,.h,.hxx"},
+    {"coq",".coq,.g,.v"},
+    {"cpp",".cpp,.cc,.cxx,.m,.hpp,.hh,.h,.hxx,.C,.H"},
+    {"crystal",".cr,.ecr"},
     {"csharp",".cs"},
     {"css",".css"},
-    {"delphi",".pas,.int,.dfm,.nfm,.dof,.dpk,.dproj,.groupproj,.bdsgroup,.bdsproj"},
-    {"elisp",".el"},
-    {"erlang",".erl,.hrl"},
-    {"fortran",".f,.f77,.f90,.f95,.f03,.for,.ftn,.fpp"},
     {"ctx",".ctx"},
-    {"groovy",".groovy,.gtmpl,.gpp,.grunit"},
-    {"haskell",".hs,.lhs"},
+    {"cython",".pyx,.pxd,.pxi"},
+    {"delphi",".pas,.int,.dfm,.nfm,.dof,.dpk,.dproj,.groupproj,.bdsgroup,.bdsproj"},
+    {"dlang",".d,.di"},
+    {"dot",".dot,.gv"},
+    {"dts",".dts,.dtsi"},
+    {"ebuild",".ebuild,.eclass"},
+    {"elisp",".el"},
+    {"elixir",".ex,.eex,.exs"},
+    {"elm",".elm"},
+    {"erlang",".erl,.hrl"},
+    {"factor",".factor"},
+    {"fortran",".f,.f77,.f90,.f95,.f03,.for,.ftn,.fpp"},
+    {"fsharp",".fs,.fsi,.fsx"},
+    {"gettext",".po,.pot,.mo"},
+    {"glsl",".vert,.tesc,.tese,.geom,.frag,.comp"},
+    {"go",".go"},
+    {"groovy",".groovy,.gtmpl,.gpp,.grunit,.gradle"},
+    {"haml",".haml"},
+    {"handlebars",".hbs"},
+    {"haskell",".hs,.lhs,.hsig"},
+    {"haxe",".hx"},
     {"hh",".h"},
     {"html",".htm,.html,.shtml,.xhtml"},
+    {"idris",".idr,.ipkg,.lidr"},
+    {"ini",".ini"},
+    {"ipython",".ipynb"},
+    {"isabelle",".thy"},
+    {"j",".ijs"},
+    {"jade",".jade"},
     {"java",".java,.properties"},
-    {"js",".js,.min.js,-min.js"},
-    {"jsp",".jsp,.jspx,.jhtm,.jhtml"},
+    {"jinja2",".j2"},
+    {"js",".js,.min.js,-min.js,.es6,.jsx,.vue"},
+    {"json",".json"},
+    {"jsp",".jsp,.jspx,.jhtm,.jhtml,.jspf,.tag,.tagf"},
+    {"julia",".jl"},
+    {"kotlin",".kt"},
+    {"less",".less"},
+    {"liquid",".liquid"},
     {"lisp",".lisp,.lsp"},
+    {"log",".log"},
     {"lua",".lua"},
-    {"make",".mk,.mak"},
+    {"make",".mk,.mak,Makefile"},
+    {"mako",".mako"},
+    {"markdown",".markdown,.mdown,.mdwn,.mkdn,.mkd,.md"},
     {"mason",".mas,.mhtml,.mpl,.mtxt"},
+    {"matlab",".m"},
+    {"mathematica",".m,.wl"},
+    {"mercury",".m,.moo"},
+    {"naccess",".asa,.rsa"},
+    {"nim",".nim"},
+    {"nix",".nix"},
     {"objc",".m,.h"},
     {"objcpp",".mm,.h"},
-    {"ocaml",".ml,.mli"},
+    {"ocaml",".ml,.mli,.mll,.mly"},
+    {"octave",".m"},
+    {"org",".org"},
     {"parrot",".pir,.pasm,.pmc,.ops,.pod,.pg,.tg"},
-    {"perl",".pl,.pm,.pod,.t,pm6"},
+    {"pdb",".pdb"},
+    {"perl",".pl,.pm,.pod,.t,.pm6"},
     {"php",".php,.phpt,.php3,.php4,.php5,.phtml"},
+    {"pike",".pike,.pmod"},
+    {"plist",".plist"},
     {"plone",".pt,.cpt,.metadata,.cpy,.py"},
+    {"proto",".proto"},
+    {"pug",".pug"},
+    {"puppet",".pp"},
     {"python",".py"},
+    {"qml",".qml"},
+    {"racket",".rkt,.ss,.scm"},
     {"rake","Rakefiles"},
+    {"restructuredtext",".rst"},
+    {"rs",".rs"},
+    {"r",".r,.R,.Rmd,.Rnw,.Rtex,.Rrst"},
+    {"rdoc",".rdoc"},
     {"ruby",".rb,.rhtml,.rjs,.rxml,.erb,.rake,.spec,.haml"},
+    {"rust",".rs"},
+    {"salt",".sls"},
+    {"sass",".sass,.scss"},
     {"scala",".scala"},
     {"scheme",".scm,.ss"},
-    {"shell",".sh,.bash,.csh,.tcsh,.ksh,.zsh"},
+    {"shell",".sh,.bash,.csh,.tcsh,.ksh,.zsh,.fish"},
     {"skipped","Files, but not directories, normally skipped (default: off)"},
     {"smalltalk",".st"},
+    {"sml",".sml,.fun,.mlb,.sig"},
     {"sql",".sql,.ctl"},
+    {"stata",".do,.ado"},
+    {"stylus",".styl"},
+    {"swift",".swift"},
     {"tcl",".tcl,.itcl,.itk"},
+    {"terraform",".tf,.tfvars"},
     {"tex",".tex,.cls,.sty"},
+    {"thrift",".thrift"},
     {"text","Text files (default: off)"},
+    {"tla",".tla"},
     {"tt",".tt,.tt2,.ttml"},
+    {"toml",".toml"},
+    {"ts",".ts,.tsx"},
+    {"twig",".twig"},
+    {"vala",".vala,.vapi"},
     {"vb",".bas,.cls,.frm,.ctl,.vb,.resx,.vbs"},
+    {"velocity",".vm,.vtl,.vsl"},
     {"verilog",".v,.vh,.sv"},
     {"vhdl",".vhd,.vhdl"},
     {"vim",".vim"},
+    {"wix",".wxi,.wxs"},
+    {"wsdl",".wsdl"},
+    {"wadl",".wadl"},
+    {"xml",".xml,.dtd,.xsl,.xslt,.ent,.tld,.plist"},
     {"yaml",".yaml,.yml"},
-    {"xml",".xml,.dtd,.xsl,.xslt,.ent"},
+
 };
 
 int re_findall(re_t *re,const char *str,long len,match_t *matches, int matches_len);
 int str_findall(re_t *re,const char *str,long len,match_t *matches, int matches_len);
+int str_casefindall(re_t *re,const char *str,long len,match_t *matches, int matches_len);
 int is_regexp(char * str, int len);
 void get_filetypes(file_t *file);
 int _ends_with(const char *name,int nsize,const char *ext,int esize);
 int is_searchable(file_t *);
 char *_strnstr1(const char *s, const char *f, int sl);
 char *_strnstr2(const char *s, int sl, const char *f, int fl);
+char *_strnstr3(const char *s, int sl, const char *f, int fl);
+char *_strncasestr(const char *s, int sl, const char *f, int fl);
 
-char* shells[] = {"bash","tcsh","ksh","zsh","ash","sh",NULL};
+#define strnstr _strnstr3
+
+
+char* shells[] = {"bash","tcsh","ksh","zsh","ash","sh",",fish",NULL};
 char* interprets[] = {"ruby","perl","php","python","lua","awk",NULL};
 
 
@@ -505,7 +590,7 @@ int isdir(char *filename){
     struct stat statbuf;
 
     if (lstat(filename, &statbuf) < 0)
-        return 0;  
+        return 0;
     return ((statbuf.st_mode & S_IFMT) == S_IFDIR);
 }
 
@@ -578,7 +663,7 @@ static string_t *string_find(string_list_t *head,char *str,str_cmp_func_t func){
 
     len = strlen(str);
     LIST_FOREACH(ptr,head,next){
-        if (ptr->len == len && func(str,ptr->str)==0){
+        if (ptr->len == len && func(str,ptr->str,len)==0){
             return ptr;
         }
     }
@@ -625,9 +710,9 @@ static void strings_free(string_list_t *head){
 
 
 /*
- * =========================================================================== 
- * bit field 
- * =========================================================================== 
+ * ===========================================================================
+ * bit field
+ * ===========================================================================
  */
 
 void bf_reset(bitfiels_t *b){
@@ -719,7 +804,7 @@ void bf_free(bitfiels_t *b) {
 }
 
 /* bit field */
-/* ========================================================================= */ 
+/* ========================================================================= */
 
 int read_file(buf_t *line,FHANDLE f, long size) {
     int res;
@@ -728,7 +813,7 @@ int read_file(buf_t *line,FHANDLE f, long size) {
 
     _free =  line->allocated - line->used;
 
-    if (_free < size){
+    if (!_free){
         tmp = realloc(line->buf,line->allocated+size);
         if (!tmp){
             return -1;
@@ -737,11 +822,14 @@ int read_file(buf_t *line,FHANDLE f, long size) {
         line->allocated += size;
     }
 
-    if (size > (line->allocated - (line->start+line->used))){
+   size = line->allocated - (line->start+line->used);
+   //if (size > (line->allocated - (line->start+line->used))){
+   if(!(size)){
         if (line->used){
             memmove(line->buf,&line->buf[line->start],line->used);
         }
         line->start = 0;
+        size = line->allocated - (line->start+line->used);
     }
 
     res = FREAD(f,&line->buf[line->start+line->used],size);
@@ -753,7 +841,7 @@ int read_file(buf_t *line,FHANDLE f, long size) {
 
 
 
-/* 
+/*
 const char* _strnchr(const char *str, int len, int ch) {
     int i;
     const char *ptr;
@@ -778,17 +866,17 @@ int get_line(buf_t *line, file_t *file) {
     int res;
 
     ptr = NULL;
-    
+
     start = 0;
     while(!ptr){
-        ptr = _strnchr(&file->buf.buf[file->buf.start+start],file->buf.used-start,'\n');
+        ptr = _strnchr(&file->buf.buf[file->buf.start+start],file->buf.used-start,0x0a);
         if (!ptr){
             start = file->buf.used;
             res = read_file(&file->buf,file->f,BUFFER_SIZE);
             if (res<=0){
                 break;
             }
-        } 
+        }
     }
 
     if (ptr){
@@ -809,10 +897,13 @@ int get_line(buf_t *line, file_t *file) {
         line->buf = tmp;
     }
     if (len){
-        memcpy(line->buf,&file->buf.buf[file->buf.start],len);
+       memcpy(line->buf,&file->buf.buf[file->buf.start],len);
+       file->buf.used -= len;
+       file->buf.start += len;
+       if (!file->buf.used){
+          file->buf.start = 0;
+       }
     }
-    file->buf.used -= len;
-    file->buf.start += len;
     line->used = len;
     return len;
 }
@@ -833,7 +924,11 @@ int compile(re_t *re,char *pattern,int options) {
        re->findall = re_findall;
        re->pe = pcre_study(re->re,0,&error);
     }else{
-       re->findall = str_findall;
+       if (options & PCRE_CASELESS){
+          re->findall = str_casefindall;
+       }else{
+          re->findall = str_findall;
+       }
     }
     return 1;
 }
@@ -843,7 +938,7 @@ int compile(re_t *re,char *pattern,int options) {
 
 
 
-inline int simple_match(re_t *re,const char *str, long len,match_t *matches, int matches_len) {
+int simple_match(re_t *re,const char *str, long len,match_t *matches, int matches_len) {
     return re->findall(re,str,len,matches,matches_len);
 }
 
@@ -851,7 +946,7 @@ inline int simple_match(re_t *re,const char *str, long len,match_t *matches, int
 int re_findall(re_t *re,const char *str,long len,match_t *matches, int matches_len){
     int nmatches = 0;
     match_t *mptr;
-    
+
     mptr = matches;
     while(len && nmatches<matches_len && (0<pcre_exec(re->re,re->pe, (char *)str,len,0,0|PCRE_NOTEMPTY,vars.offsets,OFFSETS_SIZE))){
         nmatches++;
@@ -869,8 +964,24 @@ int re_findall(re_t *re,const char *str,long len,match_t *matches, int matches_l
 int str_findall(re_t *re,const char *str,long len,match_t *matches, int matches_len){
     const char *r;
     int nmatches = 0;
-    
-    while(len && nmatches<matches_len && (r = _strnstr2(str,len,re->pattern,re->plen))){
+
+    while(len && nmatches<matches_len && (r = strnstr(str,len,re->pattern,re->plen))){
+        nmatches++;
+        matches->start = r-str;
+        matches->len = re->plen;
+        matches++;
+        r=r+re->plen;
+        len -= r-str;
+        str = r;
+    }
+    return nmatches;
+}
+
+int str_casefindall(re_t *re,const char *str,long len,match_t *matches, int matches_len){
+    const char *r;
+    int nmatches = 0;
+
+    while(len && nmatches<matches_len && (r = _strncasestr(str,len,re->pattern,re->plen))){
         nmatches++;
         matches->start = r-str;
         matches->len = re->plen;
@@ -886,7 +997,7 @@ int str_findall(re_t *re,const char *str,long len,match_t *matches, int matches_
 inline int simple_matches(re_t *re,char *str, long len) {
     vars.nmatches = 0;
     int *ptr;
-    
+
     ptr = vars.matches;
     while(len && simple_match(re,str,len,NULL) && vars.nmatches<OFFSETS_SIZE){
         vars.nmatches++;
@@ -968,13 +1079,113 @@ char *_strnstr2(const char *s,int sl, const char *f,int fl){
     return NULL;
 }
 
+
+char *_strnstr3(const char *s,int sl, const char *f,int fl){
+    const char *ptr;
+    const char *eptr;
+
+    if(sl<fl){
+        return NULL;
+    }
+
+    if (f && fl){
+        int xfl = fl-1;
+        eptr = s+sl-xfl;
+
+        ptr = _strnchr(s,eptr-s,*f);
+        if (ptr){
+           char e = f[xfl];
+           while(ptr && (ptr<eptr)){
+              if (*(ptr+xfl) == e){
+                 if (!memcmp(ptr,f,xfl)){
+                    return (char*)ptr;
+                 }
+              }
+              ptr++;
+              ptr = _strnchr(ptr,eptr-ptr,*f);
+           }
+        }
+    }
+    return NULL;
+}
+
+
+const char* strncasechr(const char *s,int sl,char uch, char lch)
+{
+   register char v;
+   register int i;
+
+   if (sl){
+      i = 0;
+      while( (v = s[i]) && i<sl){
+         if (v == lch || v == uch){
+            return &s[i];
+         }
+         i++;
+      }
+   }
+   return NULL;
+}
+
+char *_strncasestr(const char *s,int sl, const char *f,int fl){
+    const char *ptr;
+    const char *eptr;
+
+    if(sl<fl){
+        return NULL;
+    }
+
+    if (f && fl){
+        int ei = fl-1;
+        int mi = ei/2;
+        char ufirst = toupper(*f);
+        char lfirst = tolower(ufirst);
+
+
+        eptr = s+sl-ei;
+
+        ptr = strncasechr(s,eptr-s,ufirst,lfirst);
+        if (ptr){
+           char le;
+           char ue;
+           char lm;
+           char um;
+           char v;
+
+           le = tolower(f[ei]);
+           ue = toupper(le);
+
+           lm = tolower(f[mi]);
+           um = toupper(lm);
+
+           while(ptr && (ptr<eptr)){
+              v = ptr[ei];
+              if (v == le || v == ue){
+                 v = ptr[mi];
+                 if (v == lm || v == um){
+                    if (!STRNCASECMP(ptr,f,ei)){
+                       return (char*)ptr;
+                    }
+                 }
+              }
+              ptr++;
+              ptr = strncasechr(ptr,eptr-ptr,ufirst,lfirst);
+           }
+        }
+    }
+    return NULL;
+}
+
+
 char *_strnstr1(const char *s, const char *f, int sl){
+
+#if 0
     int fl;
     register const char *ptr;
     register const char *eptr;
 
 
-    
+
     if (f && *f){
         ptr = _strnchr(s,sl,*f);
         if (ptr){
@@ -1000,6 +1211,12 @@ char *_strnstr1(const char *s, const char *f, int sl){
         return (char*)s;
     }
     return NULL;
+#else
+   int fl;
+   fl = strlen(f);
+
+   return strnstr(s,sl,f,fl);
+#endif
 }
 
 char *analyse_header(char *str,int len) {
@@ -1035,7 +1252,7 @@ char* analyse_internals(file_t *file) {
     if (size>0){
         vars.size_processed+=size;
 
-        if ( (size>6) && (0==strncasecmp(file->buf.buf,"<?xml ",6))){
+        if ( (size>6) && (0==STRNCASECMP(file->buf.buf,"<?xml ",6))){
             res = "xml";
         }else if ( (file->buf.buf[0] == '#') && (file->buf.buf[1] == '!')){
             /* find 0x0a */
@@ -1045,8 +1262,8 @@ char* analyse_internals(file_t *file) {
                 if (ptr){
                     res = ptr;
                 }
-                /* 
-                 * types: 
+                /*
+                 * types:
                  * - shell,TEXT == (?:ba|t?c|k|z)?sh) == bash|t*sh|ksh|zsh|sh
                  * - $2,TEXT    == (ruby|perl|php|python)
                  * */
@@ -1068,7 +1285,7 @@ char* analyse_internals(file_t *file) {
 }
 
 
-inline void out_line(buf_t *line) {
+void out_line(buf_t *line) {
     fwrite(line->buf,1,line->used,stdout);
 }
 
@@ -1219,7 +1436,7 @@ long analize_file(file_t *file) {
                         vars.hused++;
                     }
                     p = &vars.history[vars.hused];
-                } 
+                }
             }
         }
         p->used = 0;
@@ -1257,6 +1474,7 @@ void get_filetypes(file_t *file) {
     if ( (type = analyse_internals(file)) ){
         ft = find_filetype(type);
         if (ft){
+            res++;
             bf_set(file->filetypes,ft->i);
         }
     }
@@ -1267,17 +1485,11 @@ void get_filetypes(file_t *file) {
         // "make" + "text"
         bf_set(file->filetypes,vars.ft_make->i);
         res++;
-        //ft = find_filetype("text");
-        //bf_set(file->filetypes,vars.ft_text->i);
-    }
-
-    if (0==FILENAMECMP("rakefile",file->name)){
+    }else if (0==FILENAMECMP("rakefile",file->name)){
         // "rake", "ruby", "text"
         ft = find_filetype("rake");
         bf_set(file->filetypes,ft->i);
         bf_set(file->filetypes,vars.ft_ruby->i);
-        //ft = find_filetype("text");
-        //bf_set(file->filetypes,vars.ft_text->i);
         res++;
     }
 
@@ -1305,7 +1517,7 @@ int ignore_dir(const char *dirname) {
     dirlen = strlen(dirname);
 
     LIST_FOREACH(str,&opt.ignore_dirs,next){
-        if ((dirlen == str->len) && FILENAMECMP(dirname,str->str)==0) {
+        if ((dirlen == str->len) && FILENAMENCMP(dirname,str->str,str->len)==0) {
             return 1;
         }
     }
@@ -1343,8 +1555,8 @@ int is_searchable(file_t *file) {
     return !(
             /* \.bak */_ends_with(file->name,len,".bak",4) ||
             /* ~$ */_ends_with(file->name,len,"~",1) ||
-            /* [._].*\.swp */ ((_starts_with(file->name,len,".",1) || _starts_with(file->name,len,"_",1)) && _ends_with(file->name,len,".swp",4)) || 
-            /* \.bak$ */ _ends_with(file->name,len,".tmp",4) || 
+            /* [._].*\.swp */ ((_starts_with(file->name,len,".",1) || _starts_with(file->name,len,"_",1)) && _ends_with(file->name,len,".swp",4)) ||
+            /* \.bak$ */ _ends_with(file->name,len,".tmp",4) ||
             /* #.+#$ */ (_starts_with(file->name,len,"#",1) && _ends_with(file->name,len,"#",1)) ||
             0/*TODO: (_starts_with(file->name,len,"core.",5))*/
             );
@@ -1369,7 +1581,7 @@ long process_sdtdin(FHANDLE f) {
 
 
 long process_file(char *fullname,char *name) {
-    
+
     vars.file.buf.start = 0;
     vars.file.buf.used = 0;
     vars.file.fullname = fullname;
@@ -1409,14 +1621,13 @@ long process_file(char *fullname,char *name) {
                             printf("%s",ft->name);
                             i++;
                         }
-
                     }
                 }
                 printf("%s",opt.line_end);
             }else{
                 get_filetypes(&vars.file);
                 analize_file(&vars.file);
-                if (!opt.show_total && (opt.l || opt.c)){ 
+                if (!opt.show_total && (opt.l || opt.c)){
                     if (vars.file.nmatches){
                         print_count(vars.file.fullname,vars.file.nmatches,opt.line_end,opt.c,opt.show_filename);
                     }else if (opt.print_count0){
@@ -1445,7 +1656,7 @@ void process(char *filename) {
     struct stat statbuf;
 
     if (lstat(filename, &statbuf) < 0){
-        fprintf(stderr,"%s: Can't stat '%s'\n",opt.self_name,filename);   
+        fprintf(stderr,"%s: Can't stat '%s'\n",opt.self_name,filename);
         return;
     }
     if (S_ISDIR(statbuf.st_mode)){
@@ -1469,8 +1680,8 @@ void process(char *filename) {
                     }
                     fullname[sizeof(fullname)-1] = 0;
                     if (lstat(fullname, &statbuf) < 0){
-                        fprintf(stderr,"%s: Can't stat '%s'\n",opt.self_name,filename);   
-                        return;  
+                        fprintf(stderr,"%s: Can't stat '%s'\n",opt.self_name,filename);
+                        return;
                     }
 #ifndef WINDOWS
                     if (S_ISLNK(statbuf.st_mode) && !opt.follow){
@@ -1664,7 +1875,7 @@ typedef struct option{
 
 
 
-typedef option_t * (*opt_find_t)(char* long_opt, char *short_opt, int opt_len, void* data); 
+typedef option_t * (*opt_find_t)(char* long_opt, char *short_opt, int opt_len, void* data);
 
 
 #define _OPT_DATA      0x01
@@ -1709,9 +1920,9 @@ int count_digits(char *str) {
 /*
  *
  *  >>-+-------------+--+-----+--+----+--+--------+----------------><
- *     '-white space-'  +- + -+  +-0--+  '-digits-'  
- *                      '- - -'  +-0x-+              
- *                               '-0X-'    
+ *     '-white space-'  +- + -+  +-0--+  '-digits-'
+ *                      '- - -'  +-0x-+
+ *                               '-0X-'
  *
  */
 
@@ -1727,7 +1938,7 @@ int parse_ulong(char *str,unsigned long *res) {
     }
     len = endp - str;
     if (len)
-        (*res) = v; 
+        (*res) = v;
     return len;
 }
 
@@ -1760,7 +1971,7 @@ int parse_long (char* str, long *res) {
     }
     len = endp - str;
     if (len)
-        (*res) = v; 
+        (*res) = v;
     return len;
 }
 
@@ -1772,7 +1983,7 @@ int parse_long_long (char* str, long long *res) {
     if ( (r == 0)  || (r == EOF) ){
         r = sscanf(str,"%"F_LONGLONG"d",res);
     }
-    if (r!= EOF){
+    if (r != EOF){
         return true;
     }
     return false;
@@ -1780,16 +1991,16 @@ int parse_long_long (char* str, long long *res) {
 
 
 int opt_long(opt_ctx_t *ctx) {
-    long res;    
+    long res;
     int i;
 
     i = count_digits(ctx->data);
     if (parse_long(ctx->data,&res)){
-        (*(long*)ctx->op->ptr) = res; 
+        (*(long*)ctx->op->ptr) = res;
         return i;
     }else{
         if (ctx->op->flags & _OPT_OPTIONAL){
-            (*(long*)ctx->op->ptr) = ((long)ctx->op->_default); 
+            (*(long*)ctx->op->ptr) = ((long)ctx->op->_default);
         }
     }
     return -1;
@@ -1805,21 +2016,21 @@ int opt_uint(opt_ctx_t *ctx) {
     res = strtoul(ctx->data,&endp,0);
     if (errno != 0 || endp == ctx->data){
         if (ctx->op->flags & _OPT_OPTIONAL){
-            (*(unsigned int*)ctx->op->ptr) = ((unsigned int)ctx->op->_default); 
+            (*(unsigned int*)ctx->op->ptr) = ((unsigned int)(ctx->op->_default));
             return 0;
         }
         return -1;
     }
 
-    (*(unsigned int*)ctx->op->ptr) = res; 
+    (*(unsigned int*)ctx->op->ptr) = res;
     return endp - ctx->data;
 
     if (parse_ulong(ctx->data,&res)){
-        (*(unsigned int*)ctx->op->ptr) = res; 
+        (*(unsigned int*)(ctx->op->ptr)) = res;
         return i;
     }else{
         if (ctx->op->flags & _OPT_OPTIONAL){
-            (*(unsigned int*)ctx->op->ptr) = ((unsigned int)ctx->op->_default); 
+            (*(unsigned int*)ctx->op->ptr) = ((unsigned int)(ctx->op->_default));
             return 0;
         }
     }
@@ -1834,11 +2045,11 @@ int opt_int(opt_ctx_t *ctx) {
     i = count_digits(ctx->data);
     res = 0;
     if (parse_long(ctx->data,&res)){
-        (*(int*)ctx->op->ptr) = res; 
+        (*(int*)ctx->op->ptr) = res;
         return i;
     }else{
         if (ctx->op->flags & _OPT_OPTIONAL){
-            (*(int*)ctx->op->ptr) = ((int)ctx->op->_default); 
+            (*(int*)ctx->op->ptr) = ((int)(ctx->op->_default));
         }
     }
     return -1;
@@ -1900,7 +2111,7 @@ option_t * opt_find(char *long_opt, char* short_opt,int len,void *options) {
 
 bool _opt_try_to_call(opt_ctx_t *ctx) {
     char *opt;
-    char *opt_prefix; 
+    char *opt_prefix;
 
 
     ctx->len = 0;
@@ -1968,7 +2179,7 @@ void _opt_shift(int argc, char *argv[],int from) {
  * --size 24
  * -- end of the options
  *
- * actions: 
+ * actions:
  *  - set to true
  *  - set to false
  *  - invert
@@ -1996,7 +2207,7 @@ int opt_parse(int argc, char *argv[], opt_find_t _opt_find,void* opt_find_data,o
 
     old_argc = argc;
     for(i=1;i<argc;i++){
-        ptr = argv[i]; 
+        ptr = argv[i];
         if (ctx.wait4data){
             ctx.data = ptr;
             _opt_try_to_call(&ctx);
@@ -2054,7 +2265,7 @@ int opt_parse(int argc, char *argv[], opt_find_t _opt_find,void* opt_find_data,o
                     if (_opt_try_to_call(&ctx)){
                         if (ctx.len>=0){
                             ptr+=ctx.len;
-                        } 
+                        }
                     }
                 }else{
                     fprintf(stderr,"%s: unrecognized option '%c'\n",ctx.pname,*ptr);
@@ -2115,13 +2326,13 @@ int type_set(opt_ctx_t *ctx) {
 
 int ignore_dir_add(opt_ctx_t *ctx) {
 
-    string_add(&opt.ignore_dirs,ctx->data,FILENAMECMP);
+    string_add(&opt.ignore_dirs,ctx->data,FILENAMENCMP);
     return strlen(ctx->data);
 }
 
 int ignore_dir_del(opt_ctx_t *ctx) {
 
-    string_del(&opt.ignore_dirs,ctx->data,FILENAMECMP);
+    string_del(&opt.ignore_dirs,ctx->data,FILENAMENCMP);
     return strlen(ctx->data);
 }
 
@@ -2387,7 +2598,7 @@ void print_version()
     printf(
             "ack in C " VERSION "\n"
             "\n"
-            "Copyright (c) 2011-2012, Roman Kraevskiy <rkraevskiy@gmail.com>\n"
+            "Copyright (c) 2011-2019, Roman Kraevskiy <rkraevskiy@gmail.com>\n"
             "All rights reserved.\n"
             "\n"
             "Redistribution and use in source and binary forms, with or without\n"
@@ -2447,7 +2658,7 @@ void print_usage()
 {
 
     long i;
-    struct skip_dirs *ptr;
+    string_pairs_t *ptr;
 
 
     printf("Usage: ack [OPTION]... PATTERN [FILE]\n"
@@ -2562,10 +2773,10 @@ void print_usage()
     ptr = skip_dirs;
     printf("  ");
     for(i=0;i<sizeof(skip_dirs)/sizeof(skip_dirs[0]);i++){
-        if (i!= 0){
+        if (i != 0){
             printf(", ");
         }
-        printf("%s",ptr->dir);
+        printf("%s",ptr->first);
         ptr++;
     }
 
@@ -2574,7 +2785,7 @@ void print_usage()
             "    /~$/           - Unix backup files\n"
             "    /#.+#$/        - Emacs swap files\n"
             "    /[._].*\\.swp$/ - Vi(m) swap files\n"
-            "    /core\\.\\d+$/   - core dumps\n"
+/*            "    /core\\.\\d+$/   - core dumps\n"*/
             "    /tmp$/         - temp files\n"
             "\n"
             "Miscellaneous:\n"
@@ -2599,7 +2810,7 @@ int process_config(char *fname){
     FILE *fp;
     int res = true;
     int nline = 0;
-   
+
     fp = fopen(fname,"r");
     if (fp){
         while (fgets(buf, sizeof(buf), fp) != NULL) {
@@ -2662,21 +2873,21 @@ int configure(){
 
 void init_skip_dirs(){
     long i;
-    struct skip_dirs *ptr;
+    string_pairs_t *ptr;
 
     ptr = skip_dirs;
 
-    for(i=0;i<sizeof(skip_dirs)/sizeof(skip_dirs[0]);i++)
+    for(i=0;i<numberof(skip_dirs);i++)
     {
-        string_add(&opt.ignore_dirs,ptr->dir,FILENAMECMP);
+        string_add(&opt.ignore_dirs,ptr->first,FILENAMENCMP);
         ptr++;
     }
 
 }
 
-void init_exts(){ 
+void init_exts(){
     long i;
-    for(i=(sizeof(file_types)/sizeof(file_types[0]))-1;i<sizeof(file_types)/sizeof(file_types[0]);i--){
+    for(i=0;i<numberof(file_types);i++){
         add_exts(file_types[i].name,file_types[i].exts,false);
     }
     vars.ft_text = find_filetype("text");
@@ -2692,8 +2903,8 @@ void init_req_filetypes(){
     opt.req_filetypes = bf_new(opt.nfiletypes);
 
     LIST_FOREACH(ft,&opt.all_filetypes,next){
-        if ( (ft->wanted == 1 ) || opt.a || (opt.types_type <= 0  && ft->wanted != -1 && 
-                    (ft != vars.ft_skipped && ft != vars.ft_binary && ft != vars.ft_skipped && ft != vars.ft_text)
+        if ( (ft->wanted == 1 ) || opt.a || (opt.types_type <= 0  && ft->wanted != -1 &&
+                    (ft != vars.ft_skipped && ft != vars.ft_binary && ft != vars.ft_text)
                     )){
             bf_set(opt.req_filetypes,ft->i);
         }
@@ -2702,7 +2913,7 @@ void init_req_filetypes(){
 
 int is_regexp(char * str, int len){
     static char regexp_chars[] = ".+?*\\)]^}|";
-    
+
     return (NULL != strpbrk(str,regexp_chars));
 }
 
@@ -2710,7 +2921,7 @@ int main(int argc, char *argv[]){
     char *locale=NULL;
     char *locale_from=NULL;
     int options = 0;
-    int to_pipe = 0; 
+    int to_pipe = 0;
     int from_pipe = 0;
     int errors;
     time_t start_time;
@@ -2776,7 +2987,7 @@ int main(int argc, char *argv[]){
     if (opt.env && !configure()){
         errors++;
     }
- 
+
     /* set from argv options */
 
     nargc = opt_parse(argc,argv,type_opt_find,args,NULL);
@@ -2890,11 +3101,11 @@ int main(int argc, char *argv[]){
                     nargc++;
                 }
             }
-            
+
             if (opt.nopager){
                 opt.pager = NULL;
             }
-            vars.history = malloc(sizeof(buf_t)*(opt.B+1)); 
+            vars.history = malloc(sizeof(buf_t)*(opt.B+1));
             memset(vars.history,0,sizeof(buf_t)*(opt.B+1));
             opt.print_count0 = (opt.c && !opt.l);
             opt.show_total = opt.c && !opt.show_filename;
